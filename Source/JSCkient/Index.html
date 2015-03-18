@@ -1,0 +1,209 @@
+﻿<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <title>JS example</title>
+    <link href="//maxcdn.bootstrapcdn.com/bootstrap/3.3.2/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        pre:empty {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="page-header">
+            <h1>JavaScript Implicit Client</h1>
+        </header>
+        <div class="row">
+            <ul class="list-unstyled list-inline">
+                <li><button class="btn btn-default request" data-scope='openid' data-type='id_token'>Login Only</button></li>
+                <li><button class="btn btn-info call">Call API</button></li>
+                <li><button class="btn btn-info logout">Logout</button></li>
+            </ul>
+        </div>
+        <div class="row">
+            <ul class="list-unstyled list-inline"></ul>
+        </div>
+        <div class="row">
+            <div class="panel panel-default">
+                <div class="panel-heading">Authorization Response</div>
+                <div class="panel-body">
+                    <pre id="response"></pre>
+                </div>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-sm-4">
+                <div class="panel panel-default">
+                    <div class="panel-heading">ID Token Contents</div>
+                    <div class="panel-body">
+                        <pre id="id-token"></pre>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm-4">
+                <div class="panel panel-default">
+                    <div class="panel-heading">Access Token</div>
+                    <div class="panel-body">
+                        <pre id="access-token"></pre>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm-4">
+                <div class="panel panel-default">
+                    <div class="panel-heading">Ajax Result</div>
+                    <div class="panel-body">
+                        <pre id="ajax-result"></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="/Scripts/oidc.js"></script>
+    <script>
+    var clientSite = "http://js.lh.beeline.ru";
+    var identitySite = "http://localhost:3838/identity";
+
+    /*
+    var clientSite = "http://jsclientbeeline.azurewebsites.net";
+    var identitySite = "http://authbeline.azurewebsites.net/identity/";
+    */
+    var config = {
+        authority: identitySite,
+        client_id: "implicitclient",
+        redirect_uri: clientSite,
+        post_logout_redirect_uri: clientSite,
+
+        // these two will be done dynamically from the buttons clicked
+        response_type: "id_token token",
+        scope: "openid",
+
+        // we're not using these in this sample
+        silent_redirect_uri: clientSite,
+        //silent_renew: true
+    };
+
+    var mgr = new TokenManager(config);
+
+    mgr.addOnTokenObtained(function () {
+        console.log("token obtained");
+    });
+    mgr.addOnTokenRemoved(function () {
+        display("#response", { message: "Logged Out" });
+        showTokens();
+    });
+
+    function display(selector, data) {
+        if (data && typeof data === 'string') {
+            data = JSON.parse(data);
+        }
+        if (data) {
+            data = JSON.stringify(data, null, 2);
+        }
+        document.querySelector(selector).textContent = data;
+    }
+
+    function showTokens() {
+        display("#id-token", mgr.id_token || "");
+        display("#access-token", mgr.access_token && { access_token: mgr.access_token, expires_in: mgr.expires_in } || "");
+    }
+    showTokens();
+
+    function handleCallback() {
+        mgr.processTokenCallbackAsync().then(function () {
+            var hash = window.location.hash.substr(1);
+            var result = hash.split('&').reduce(function (result, item) {
+                var parts = item.split('=');
+                result[parts[0]] = parts[1];
+                return result;
+            }, {});
+            display("#response", result);
+            showTokens();
+            if (result.session_state) {
+                enableSessionState(result.session_state);
+            }
+        }, function (error) {
+            display("#response", error.message && { error: error.message } || error);
+        });
+    }
+
+    function authorize(scope, response_type) {
+        config.scope = scope;
+        config.response_type = response_type;
+        mgr.redirectForToken();
+    }
+
+    function logout() {
+        mgr.redirectForLogout();
+    }
+
+    function callApi() {
+        var xhr = new XMLHttpRequest();
+        xhr.onload = function (e) {
+            if (xhr.status >= 400) {
+                display("#ajax-result", {
+                    status: xhr.status,
+                    statusText: xhr.statusText,
+                    wwwAuthenticate: xhr.getResponseHeader("WWW-Authenticate")
+                });
+            }
+            else {
+                display("#ajax-result", xhr.response);
+            }
+        };
+        xhr.onerror = function () {
+            if (xhr.status === 401) {
+                mgr.removeToken();
+                showTokens();
+            }
+
+            display("#ajax-result", {
+                status: xhr.status,
+                statusText: xhr.statusText,
+                wwwAuthenticate: xhr.getResponseHeader("WWW-Authenticate")
+            });
+        };
+        xhr.open("GET", identitySite, true);
+        xhr.setRequestHeader("Authorization", "Bearer " + mgr.access_token);
+        xhr.send();
+    }
+
+    if (window.location.hash) {
+        handleCallback();
+    }
+
+    [].forEach.call(document.querySelectorAll(".request"), function (button) {
+        button.addEventListener("click", function () {
+            authorize(this.dataset["scope"], this.dataset["type"]);
+        });
+    });
+
+    document.querySelector(".call").addEventListener("click", callApi, false);
+    document.querySelector(".logout").addEventListener("click", logout, false);
+
+    function enableSessionState(sessionState) {
+        mgr.getMetadataAsync().then(function (meta) {
+            if (meta.check_session_iframe) {
+                document.getElementById("rp").src = "check_session.html#" +
+                        "session_state=" + sessionState +
+                        "&check_session_iframe=" + meta.check_session_iframe +
+                        "&client_id=" + config.client_id;
+            }
+        });
+    }
+    window.onmessage = function (e) {
+        if (e.origin === window.location.protocol + "//" + window.location.host && e.data === "changed") {
+            mgr.removeToken();
+            //config.scope = "openid";
+            //config.response_type = "id_token";
+            //mgr.renewTokenSilentAsync().then(function () {
+            //    console.log("renewTokenSilentAsync success");
+            //}, function () {
+            //    console.log("renewTokenSilentAsync failed");
+            //});
+        }
+    }
+    </script>
+    <iframe id="rp" style="display:none"></iframe>
+</body>
+</html>
